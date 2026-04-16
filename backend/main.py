@@ -1,3 +1,4 @@
+import hashlib
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from controllers.workflow_controller import queue_workflow, get_result, get_all_logs
@@ -16,11 +17,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-users = {"admin": "admin123", "user": "user123"}
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+users = {
+    "admin": hash_password("admin123"),
+    "user": hash_password("user123")
+}
 
 @app.post("/login")
 def login(req: LoginRequest):
-    if users.get(req.username) == req.password:
+    if users.get(req.username) == hash_password(req.password):
         logger.info(f"User {req.username} logged in")
         return {"success": True, "token": req.username}
     raise HTTPException(status_code=401, detail="Invalid credentials")
