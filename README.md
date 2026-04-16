@@ -108,6 +108,4 @@ A production-style multi-service AI agent that executes real-world workflows fro
 
 ---
 
-## Author
 
-Built by Niraj Kumar — https://github.com/Niraj123kumar
