@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+redis
+pydantic
+openai
+pandas
+python-multipart

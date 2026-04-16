@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>AI Workflow Agent</title>
+  <style>
+    body { font-family: sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #f5f5f5; }
+    input, textarea { width: 100%; padding: 10px; margin: 8px 0; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
+    button { background: #4CAF50; color: white; padding: 10px 24px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+    button:hover { background: #45a049; }
+    #result { background: white; padding: 16px; border-radius: 8px; margin-top: 16px; border-left: 4px solid #4CAF50; display: none; }
+    #logs { background: #1e1e1e; color: #00ff00; padding: 16px; border-radius: 8px; margin-top: 16px; font-size: 12px; max-height: 300px; overflow-y: auto; display: none; }
+    .section { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    h2 { color: #333; }
+  </style>
+</head>
+<body>
+  <h1>AI Workflow Agent</h1>
+
+  <div class="section" id="login-section">
+    <h2>Login</h2>
+    <input id="username" placeholder="Username (admin)" value="admin"/>
+    <input id="password" type="password" placeholder="Password (admin123)" value="admin123"/>
+    <button onclick="login()">Login</button>
+  </div>
+
+  <div class="section" id="workflow-section" style="display:none">
+    <h2>Run Workflow</h2>
+    <textarea id="command" rows="3" placeholder="e.g. Analyze this CSV and show trends / Schedule a meeting tomorrow / Summarize today's reports"></textarea>
+    <button onclick="runWorkflow()">Run</button>
+    <div id="result"></div>
+    <br>
+    <button onclick="loadLogs()" style="background:#555">View Logs</button>
+    <div id="logs"></div>
+  </div>
+
+  <script>
+    const API = "http://localhost:8000";
+    let currentUser = "";
+
+    async function login() {
+      const username = document.getElementById("username").value;
+      const password = document.getElementById("password").value;
+      const res = await fetch(`${API}/login`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({username, password})
+      });
+      const data = await res.json();
+      if (data.success) {
+        currentUser = username;
+        document.getElementById("login-section").style.display = "none";
+        document.getElementById("workflow-section").style.display = "block";
+      } else {
+        alert("Invalid credentials");
+      }
+    }
+
+    async function runWorkflow() {
+      const command = document.getElementById("command").value;
+      const res = await fetch(`${API}/run-workflow`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({command, username: currentUser})
+      });
+      const data = await res.json();
+      const traceId = data.trace_id;
+
+      document.getElementById("result").style.display = "block";
+      document.getElementById("result").innerHTML = "Processing... please wait";
+
+      setTimeout(async () => {
+        const res2 = await fetch(`${API}/result/${traceId}`);
+        const result = await res2.json();
+        document.getElementById("result").innerHTML = `
+          <b>Intent:</b> ${result.intent || "detecting..."}<br>
+          <b>Result:</b> ${result.result || "processing..."}<br>
+          <b>Trace ID:</b> ${traceId}<br>
+          <b>Status:</b> ${result.status}
+        `;
+      }, 3000);
+    }
+
+    async function loadLogs() {
+      const res = await fetch(`${API}/logs`);
+      const logs = await res.json();
+      const logsDiv = document.getElementById("logs");
+      logsDiv.style.display = "block";
+      logsDiv.innerHTML = logs.map(l =>
+        `[${l.timestamp}] ${l.trace_id.slice(0,8)} | ${l.status} | ${l.command}`
+      ).join("<br>");
+    }
+  </script>
+</body>
+</html>
