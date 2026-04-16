@@ -7,18 +7,24 @@ from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 r = redis.from_url("redis://redis:6379")
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def detect_intent(command):
-    command = command.lower()
-    if "csv" in command or "analyze" in command or "data" in command:
+    command_lower = command.lower()
+    if "csv" in command_lower or "analyze" in command_lower or "data" in command_lower or "report" in command_lower:
         return "csv_analysis"
-    elif "schedule" in command or "meeting" in command or "tomorrow" in command:
+    elif "schedule" in command_lower or "meeting" in command_lower or "tomorrow" in command_lower:
         return "scheduler"
     else:
         return "summarize"
+
+def extract_file_id(command):
+    if "[file_id:" in command:
+        start = command.index("[file_id:") + 9
+        end = command.index("]", start)
+        return command[start:end]
+    return None
 
 def tool_summarize(command):
     response = client.chat.completions.create(
@@ -31,7 +37,21 @@ def tool_scheduler(command):
     return "Meeting scheduled for tomorrow at 10:00 AM. Invite sent to team."
 
 def tool_csv_analysis(command):
-    return "CSV Analysis: Top trends identified — Sales up 23%, Region West leads, Product A is top performer."
+    file_id = extract_file_id(command)
+    if file_id:
+        file_content = r.get(f"file:{file_id}")
+        if file_content:
+            csv_text = file_content.decode("utf-8") if isinstance(file_content, bytes) else file_content
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": f"Analyze this CSV data and give a detailed report:\n\n{csv_text[:4000]}"}]
+            )
+            return response.choices[0].message.content
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": f"Answer this data/csv related query: {command}"}]
+    )
+    return response.choices[0].message.content
 
 def process_task(task):
     trace_id = task["trace_id"]
