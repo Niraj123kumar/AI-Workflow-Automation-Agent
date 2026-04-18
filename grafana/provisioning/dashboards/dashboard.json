@@ -1,0 +1,27 @@
+{
+  "panels": [
+    {
+      "title": "HTTP Requests Total",
+      "type": "graph",
+      "targets": [{ "expr": "http_requests_total" }]
+    },
+    {
+      "title": "P95 Request Latency",
+      "type": "graph",
+      "targets": [{ "expr": "http_request_duration_seconds{quantile=\"0.95\"}" }]
+    },
+    {
+      "title": "Task Queue Depth",
+      "type": "gauge",
+      "targets": [{ "expr": "redis_task_queue_depth" }]
+    },
+    {
+      "title": "Job Status",
+      "type": "stat",
+      "targets": [
+        { "expr": "job_success_total", "legendFormat": "Success" },
+        { "expr": "job_failure_total", "legendFormat": "Failure" }
+      ]
+    }
+  ]
+}

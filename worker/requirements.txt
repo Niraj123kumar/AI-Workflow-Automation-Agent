@@ -1,3 +1,5 @@
 redis
 openai
 pandas
+cryptography
+python-json-logger

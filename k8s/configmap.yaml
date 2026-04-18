@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-agent-config
+data:
+  REDIS_URL: "redis://redis:6379"
+  SMTP_HOST: "smtp.gmail.com"
+  SMTP_PORT: "587"
+  SMTP_USER: "admin@example.com"
+  GOOGLE_CLIENT_ID: "google-id"
+  GOOGLE_CONF_URL: "https://accounts.google.com/.well-known/openid-configuration"
+  JWT_ALGORITHM: "HS256"
+  ACCESS_TOKEN_EXPIRE_MINUTES: "15"
+  REFRESH_TOKEN_EXPIRE_DAYS: "7"
+  VITE_API_BASE_URL: "http://localhost:8000"

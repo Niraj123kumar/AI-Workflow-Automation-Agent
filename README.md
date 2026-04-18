@@ -6,105 +6,70 @@ A production-style multi-service AI agent that executes real-world workflows fro
 
 ## Features
 
-- Natural Language Workflows — type commands like "Summarize AI trends", "Schedule a meeting", or "Analyze this CSV"
-- Intent Detection — automatically routes to the right tool (summarize / scheduler / csv_analysis)
-- File Upload and Analysis — upload .txt or .csv files; worker reads and analyzes via OpenAI
-- Async Task Queue — Redis-backed queue with background worker processing
-- Idempotency — duplicate tasks are detected and skipped
-- Password Hashing — SHA-256 hashed credentials
-- Notification System — real-time alerts for queued and completed workflows
-- Chat UI — dark glass interface with sidebar history, alerts tab, and New Chat button
-- Trace IDs — every workflow run is tracked end-to-end
+- **Natural Language Workflows** — Type commands like "Summarize AI trends", "Schedule a meeting", or "Analyze this CSV".
+- **Advanced Intent Detection** — Uses OpenAI Function Calling to route to specific tools: `summarize`, `scheduler`, or `csv_analysis`.
+- **File Upload & Analysis** — Upload `.txt`, `.csv`, or `.pdf` files for AI-powered data extraction and summarization.
+- **Async Task Queue** — Redis-backed queue with parallel worker processing (2+ worker instances).
+- **Security & RBAC** — JWT-based authentication with refresh tokens and Role-Based Access Control (Admin vs. User).
+- **Google OAuth2** — Integration for seamless login via Google.
+- **Observability** — Prometheus metrics at `/metrics`, Grafana dashboards, and structured JSON logging with Trace IDs.
+- **Modern Chat UI** — Dark glass morphism design built with React 18, Vite, and Tailwind CSS.
+- **Kubernetes Ready** — Full K8s manifests for Minikube deployment with Horizontal Pod Autoscaling.
 
 ---
 
 ## Tech Stack
 
-- Backend API: FastAPI (Python)
-- Task Worker: Python (separate Docker service)
-- Queue: Redis
-- Frontend: HTML / CSS / Vanilla JS
-- AI: OpenAI GPT-3.5-turbo
-- Infrastructure: Docker Compose
+- **Backend**: FastAPI (Python)
+- **Worker**: Python (Separate background service)
+- **Database/Queue**: Redis
+- **Frontend**: React 18, Vite, Tailwind CSS, Lucide React
+- **AI**: OpenAI GPT-3.5-turbo (Function Calling)
+- **Infrastructure**: Docker Compose, Kubernetes (Minikube)
+- **Observability**: Prometheus, Grafana
 
 ---
 
-## Architecture
+## How to Run (Docker)
 
-    User
-     -> Frontend (port 3000)
-     -> Backend API (port 8000)
-     -> Redis Queue
-     -> Worker (polls queue)
-     -> OpenAI GPT-3.5
-     -> Result saved to Redis
-     -> Frontend polls /result/:trace_id
+1. **Setup Environment**:
+   ```bash
+   cp .env.example .env
+   # Add your OPENAI_API_KEY and other credentials
+   ```
 
----
+2. **Start Services**:
+   ```bash
+   docker-compose up --build -d
+   ```
 
-## Project Structure
+3. **Access the App**:
+   - Frontend: `http://localhost:3000`
+   - Backend API Docs: `http://localhost:8000/docs`
+   - Grafana: `http://localhost:3001`
+   - Prometheus: `http://localhost:9090`
 
-    ai-agent/
-    backend/
-        main.py
-        controllers/
-            workflow_controller.py
-        models/
-            task.py
-        services/
-            redis_client.py
-    worker/
-        worker.py
-    frontend/
-        index.html
-    docker-compose.yml
-    .env
+4. **Default Credentials**:
+   - Username: `admin` | Password: `admin123`
+   - Username: `user` | Password: `user123`
 
 ---
 
-## How to Run
+## How to Run (Kubernetes)
 
-1. Add your OpenAI API key
-
-    echo "OPENAI_API_KEY=sk-..." > .env
-
-2. Start all services
-
-    docker-compose up --build
-
-3. Open the app
-
-    http://localhost:3000
-
-4. Login
-
-    Username: admin
-    Password: admin123
+Refer to [README-k8s.md](./README-k8s.md) for full Minikube deployment instructions.
 
 ---
 
 ## API Endpoints
 
-- POST   /login              Authenticate user
-- POST   /run-workflow       Queue a workflow command
-- GET    /result/{trace_id}  Poll for result
-- GET    /logs               All workflow history
-- POST   /upload             Upload a file for analysis
-- GET    /notifications      Recent notification events
-
----
-
-## Workflow Tools
-
-- summarize     (default)                        OpenAI GPT summary
-- scheduler     schedule, meeting, tomorrow      Returns scheduled confirmation
-- csv_analysis  csv, analyze, data, report       Reads uploaded file then GPT analysis
-
----
-
-## Environment Variables
-
-- OPENAI_API_KEY: Your OpenAI API key
+- `POST /auth/login` — Authenticate and issue JWT.
+- `POST /auth/register` — Create new user.
+- `GET /auth/google` — Google OAuth2 login.
+- `POST /run-workflow` — Queue a workflow command (JWT required).
+- `GET /result/{trace_id}` — Poll for task results.
+- `GET /admin/jobs` — View all system jobs (Admin only).
+- `GET /metrics` — Prometheus metrics.
 
 ---
 

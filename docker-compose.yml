@@ -6,44 +6,77 @@ services:
       - "6379:6379"
     networks:
       - ai-network
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   backend:
     build: ./backend
     container_name: backend
     ports:
       - "8000:8000"
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    env_file:
+      - .env
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     networks:
       - ai-network
 
   worker1:
     build: ./worker
     container_name: worker1
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    env_file:
+      - .env
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     networks:
       - ai-network
 
   worker2:
     build: ./worker
     container_name: worker2
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    env_file:
+      - .env
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    networks:
+      - ai-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - ai-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
     networks:
       - ai-network
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
     container_name: frontend
     ports:
       - "3000:80"
@@ -55,3 +88,6 @@ services:
 networks:
   ai-network:
     driver: bridge
+
+volumes:
+  redis_data:

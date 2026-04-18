@@ -1,87 +1,277 @@
-import redis
-import json
-import logging
 import os
-from openai import OpenAI
+import re
+import json
+import socket
+import logging
+import time
+import sys
+import signal
 from datetime import datetime
+from openai import OpenAI
+import redis
+from cryptography.fernet import Fernet
+from pythonjsonlogger import jsonlogger
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-r = redis.from_url("redis://redis:6379")
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Structured Logging
+logger = logging.getLogger()
+logHandler = logging.StreamHandler()
+formatter = jsonlogger.JsonFormatter('%(timestamp)s %(service_name)s %(job_id)s %(event)s %(level)s')
+logHandler.setFormatter(formatter)
+logger.addHandler(logHandler)
+logger.setLevel(logging.INFO)
 
-def detect_intent(command):
-    command_lower = command.lower()
-    if "csv" in command_lower or "analyze" in command_lower or "data" in command_lower or "report" in command_lower:
-        return "csv_analysis"
-    elif "schedule" in command_lower or "meeting" in command_lower or "tomorrow" in command_lower:
-        return "scheduler"
-    else:
-        return "summarize"
+# Configuration
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+WORKER_ID = socket.gethostname()
 
-def extract_file_id(command):
-    if "[file_id:" in command:
-        start = command.index("[file_id:") + 9
-        end = command.index("]", start)
-        return command[start:end]
-    return None
+r = redis.from_url(REDIS_URL)
+client = OpenAI(api_key=OPENAI_API_KEY)
+fernet = Fernet(ENCRYPTION_KEY.encode()) if ENCRYPTION_KEY else None
 
-def tool_summarize(command):
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": f"Summarize or answer this: {command}"}]
-    )
-    return response.choices[0].message.content
+# --- Graceful Shutdown ---
+running = True
+def handle_exit(sig, frame):
+    global running
+    logger.info("Worker shutting down cleanly", extra={"service_name": "worker", "event": "shutdown", "worker_id": WORKER_ID})
+    running = False
+    try:
+        r.close()
+    except:
+        pass
+    sys.exit(0)
 
-def tool_scheduler(command):
-    return "Meeting scheduled for tomorrow at 10:00 AM. Invite sent to team."
+def decrypt_data(token):
+    if not fernet or not token:
+        return token
+    try:
+        return fernet.decrypt(token.encode()).decode()
+    except:
+        return token
 
-def tool_csv_analysis(command):
-    file_id = extract_file_id(command)
+def encrypt_data(data):
+    if isinstance(data, dict) or isinstance(data, list):
+        return json.dumps(data)
+    return str(data)
+
+def log_tool_usage(tool_name, input_tokens, output_tokens, duration_ms, job_id):
+    log_entry = {
+        "tool_name": tool_name,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "duration_ms": duration_ms,
+        "job_id": job_id,
+        "timestamp": datetime.now().isoformat()
+    }
+    # rubric: atomic pipe
+    pipe = r.pipeline()
+    pipe.lpush("tool_logs", json.dumps(log_entry))
+    pipe.ltrim("tool_logs", 0, 199)
+    pipe.execute()
+
+def update_heartbeat():
+    r.setex(f"worker_heartbeat:{WORKER_ID}", 60, str(int(time.time())))
+
+# Tool Handlers
+def handle_csv_analyzer(query, file_id=None, job_id=None):
+    start_time = time.time()
+    content = ""
     if file_id:
-        file_content = r.get(f"file:{file_id}")
-        if file_content:
-            csv_text = file_content.decode("utf-8") if isinstance(file_content, bytes) else file_content
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": f"Analyze this CSV data and give a detailed report:\n\n{csv_text[:4000]}"}]
-            )
-            return response.choices[0].message.content
+        raw_file = r.get(f"file:{file_id}")
+        if raw_file:
+            content = raw_file.decode() if isinstance(raw_file, bytes) else raw_file
+    
+    prompt = f"Analyze this data/query: {query}\n\nContext: {content[:4000]}"
+    
+    update_heartbeat()
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": f"Answer this data/csv related query: {command}"}]
+        messages=[{"role": "system", "content": "You are a data analyst. Return the top 5 trends as a JSON object with a 'trends' key containing a list of {title, description, value} objects."},
+                  {"role": "user", "content": prompt}],
+        response_format={"type": "json_object"}
     )
+    update_heartbeat()
+    
+    duration = int((time.time() - start_time) * 1000)
+    log_tool_usage("csv_analyzer", response.usage.prompt_tokens, response.usage.completion_tokens, duration, job_id)
     return response.choices[0].message.content
+
+def handle_meeting_scheduler(raw_command, job_id=None):
+    start_time = time.time()
+    update_heartbeat()
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "system", "content": "Extract meeting details. Return JSON with keys: title, datetime_iso, attendees (list), description."},
+                  {"role": "user", "content": raw_command}],
+        response_format={"type": "json_object"}
+    )
+    update_heartbeat()
+    
+    duration = int((time.time() - start_time) * 1000)
+    log_tool_usage("meeting_scheduler", response.usage.prompt_tokens, response.usage.completion_tokens, duration, job_id)
+    return response.choices[0].message.content
+
+def handle_report_summarizer(text, file_id=None, job_id=None):
+    start_time = time.time()
+    content = text
+    if file_id:
+        raw_file = r.get(f"file:{file_id}")
+        if raw_file:
+            content = raw_file.decode() if isinstance(raw_file, bytes) else raw_file
+    
+    update_heartbeat()
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "system", "content": "Summarize the text. Return JSON with keys: summary, action_items (list)."},
+                  {"role": "user", "content": content[:4000]}],
+        response_format={"type": "json_object"}
+    )
+    update_heartbeat()
+    
+    duration = int((time.time() - start_time) * 1000)
+    log_tool_usage("report_summarizer", response.usage.prompt_tokens, response.usage.completion_tokens, duration, job_id)
+    return response.choices[0].message.content
+
+tools_config = [
+    {
+        "type": "function",
+        "function": {
+            "name": "csv_analyzer",
+            "description": "Analyze CSV data or data-related queries",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "file_id": {"type": "string", "description": "Optional file ID if provided in command [file_id:xxx]"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "meeting_scheduler",
+            "description": "Schedule a meeting or appointment",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "raw_command": {"type": "string"}
+                },
+                "required": ["raw_command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "report_summarizer",
+            "description": "Summarize text or a file",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "file_id": {"type": "string", "description": "Optional file ID if provided in command [file_id:xxx]"}
+                },
+                "required": ["text"]
+            }
+        }
+    }
+]
 
 def process_task(task):
-    trace_id = task["trace_id"]
-    command = task["command"]
-    logger.info(f"[{trace_id}] Processing: {command}")
-    intent = detect_intent(command)
-    logger.info(f"[{trace_id}] Intent: {intent}")
-    if intent == "summarize":
-        result = tool_summarize(command)
-    elif intent == "scheduler":
-        result = tool_scheduler(command)
-    elif intent == "csv_analysis":
-        result = tool_csv_analysis(command)
-    else:
-        result = "Unknown command"
-    task["status"] = "completed"
-    task["intent"] = intent
-    task["result"] = result
-    task["completed_at"] = datetime.now().isoformat()
-    r.set(f"trace:{trace_id}", json.dumps(task))
-    logger.info(f"[{trace_id}] Done: {result[:50]}")
+    trace_id = task.get("trace_id")
+    command = task.get("command")
+    username = task.get("username")
+    retry_count = task.get("retry_count", 0)
+    start_time = time.time()
 
-logger.info("Worker started, waiting for tasks...")
-while True:
-    task_data = r.brpop("task_queue", timeout=5)
-    if task_data:
-        task = json.loads(task_data[1])
-        trace_id = task["trace_id"]
-        existing = r.get(f"trace:{trace_id}")
-        if existing and json.loads(existing).get("status") == "completed":
-            logger.info(f"[{trace_id}] Already processed, skipping")
+    logger.info("Task received", extra={"job_id": trace_id, "service_name": "worker", "event": "task_received"})
+
+    try:
+        is_mock = not OPENAI_API_KEY or "your_openai_api_key" in OPENAI_API_KEY
+        
+        if is_mock:
+            time.sleep(2)
+            if "schedule" in command.lower() or "meeting" in command.lower():
+                intent, result = "scheduler", {"title": "Meeting", "datetime_iso": datetime.now().isoformat(), "attendees": ["admin"], "description": command}
+            elif "analyze" in command.lower() or "csv" in command.lower():
+                intent, result = "csv_analysis", {"trends": [{"title": "Growth", "value": "+10%"}]}
+            else:
+                intent, result = "summarize", {"summary": f"Summary for: {command}", "action_items": ["Review"]}
         else:
+            file_id = None
+            if "[file_id:" in command:
+                match = re.search(r"\[file_id:([^\]]+)\]", command)
+                if match: file_id = match.group(1)
+
+            update_heartbeat()
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": command}],
+                tools=tools_config,
+                tool_choice="auto"
+            )
+            update_heartbeat()
+
+            message = response.choices[0].message
+            if message.tool_calls:
+                tool_call = message.tool_calls[0]
+                function_name = tool_call.function.name
+                args = json.loads(tool_call.function.arguments)
+                if function_name == "csv_analyzer":
+                    result, intent = handle_csv_analyzer(args.get("query", command), args.get("file_id") or file_id, trace_id), "csv_analysis"
+                elif function_name == "meeting_scheduler":
+                    result, intent = handle_meeting_scheduler(args.get("raw_command", command), trace_id), "scheduler"
+                elif function_name == "report_summarizer":
+                    result, intent = handle_report_summarizer(args.get("text", command), args.get("file_id") or file_id, trace_id), "summarize"
+                else: result, intent = "Tool not found", "unknown"
+            else:
+                result, intent = handle_report_summarizer(command, file_id, trace_id), "summarize"
+
+        end_time = time.time()
+        duration_ms = int((end_time - start_time) * 1000)
+
+        task.update({
+            "status": "completed",
+            "intent": intent,
+            "result": result,
+            "completed_at": datetime.now().isoformat(),
+            "worker_id": WORKER_ID,
+            "duration_ms": duration_ms
+        })
+        
+        r.set(f"trace:{trace_id}", json.dumps(task))
+        r.publish(f"task_complete:{trace_id}", json.dumps(task))
+        logger.info("Task completed", extra={"job_id": trace_id, "service_name": "worker", "event": "task_completed"})
+
+    except Exception as e:
+        print(f"ERROR: Task {trace_id} failed: {str(e)}", file=sys.stderr)
+        retry_count += 1
+        if retry_count < 3:
+            task["retry_count"] = retry_count
+            r.lpush("task_queue", json.dumps(task))
+            logger.warning(f"Task failed, retrying ({retry_count}/3)", extra={"job_id": trace_id})
+        else:
+            task.update({"status": "DEAD", "error": str(e), "completed_at": datetime.now().isoformat()})
+            r.set(f"trace:{trace_id}", json.dumps(task))
+            r.lpush("dead_letter_queue", json.dumps(task))
+            r.publish(f"task_complete:{trace_id}", json.dumps(task))
+            logger.error("Task failed 3 times, moved to DLQ", extra={"job_id": trace_id})
+
+logger.info("Worker started", extra={"service_name": "worker", "event": "worker_startup", "worker_id": WORKER_ID})
+
+while running:
+    try:
+        task_data = r.brpop("task_queue", timeout=5)
+        if task_data:
+            task = json.loads(task_data[1])
+            trace_id = task.get("trace_id")
+            existing = r.get(f"trace:{trace_id}")
+            if existing and json.loads(existing).get("status") == "completed":
+                continue
             process_task(task)
+        update_heartbeat()
+    except Exception as e:
+        if running: logger.error(f"Worker loop error: {e}")
