@@ -1,43 +1,40 @@
 import os
-import json
-import uuid
 import logging
-import hashlib
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
+from datetime import datetime
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from pythonjsonlogger import jsonlogger
-from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_fastapi_instrumentator import Instrumentator, Metrics
+from prometheus_client import Gauge, Counter
 from authlib.integrations.starlette_client import OAuth
 from starlette.middleware.sessions import SessionMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from fastapi.responses import JSONResponse
 
-# Define custom 429 handler
-async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
-    return JSONResponse(
-        status_code=429,
-        content={"status": "error", "message": "rate limit exceeded", "data": None, "job_id": None}
-    )
-
-# Import from our modules
+# Import models
 from models.task import LoginRequest, RegisterRequest, WorkflowRequest, StandardResponse
-from controllers.workflow_controller import queue_workflow, get_result, get_all_logs
+
+# Import controllers
+from controllers import auth_controller, workflow_controller
 from services.redis_client import RedisClient
 
 # Configuration
 JWT_SECRET = os.getenv("JWT_SECRET", "supersecret")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = 15
-REFRESH_TOKEN_EXPIRE_DAYS = 7
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 
 # Rate Limiting
 limiter = Limiter(key_func=get_remote_address)
+
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"status": "error", "message": "rate limit exceeded", "data": None, "job_id": None}
+    )
 
 # Structured Logging
 logger = logging.getLogger()
@@ -46,8 +43,6 @@ formatter = jsonlogger.JsonFormatter('%(timestamp)s %(service_name)s %(job_id)s 
 logHandler.setFormatter(formatter)
 logger.addHandler(logHandler)
 logger.setLevel(logging.INFO)
-
-from fastapi.responses import JSONResponse
 
 app = FastAPI()
 app.state.limiter = limiter
@@ -62,8 +57,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Prometheus Instrumentation
-Instrumentator().instrument(app).expose(app)
+# Custom Metrics
+TASK_QUEUE_DEPTH = Gauge("task_queue_depth", "Depth of the task queue")
+JOB_SUCCESS_TOTAL = Counter("job_success_total", "Total number of successful jobs")
+JOB_FAILURE_TOTAL = Counter("job_failure_total", "Total number of failed jobs")
+TOOL_USAGE_TOTAL = Counter("tool_usage_total", "Total tool usage", ["tool_name"])
+
+def update_metrics():
+    r = RedisClient.get_instance()
+    TASK_QUEUE_DEPTH.set(r.llen("task_queue"))
+
+instrumentator = Instrumentator()
+@instrumentator.metrics()
+def custom_metrics(metrics: Metrics):
+    update_metrics()
+
+instrumentator.instrument(app).expose(app)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 oauth = OAuth()
@@ -75,32 +84,7 @@ oauth.register(
     client_kwargs={'scope': 'openid email profile'}
 )
 
-# --- Lifespan/Shutdown ---
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("Backend shutting down cleanly", extra={"service_name": "backend", "event": "shutdown"})
-    r = RedisClient.get_instance()
-    r.close()
-
-# Helper functions
-def hash_password(password: str) -> str:
-    # rubric: keep hashlib sha256 as per latest request
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def create_access_token(data: dict):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-def create_refresh_token(username: str):
-    expire = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    payload = {"sub": username, "exp": expire, "type": "refresh"}
-    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-    r = RedisClient.get_instance()
-    r.setex(f"refresh:{username}", timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS), token)
-    return token
+# --- Auth Helpers ---
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
@@ -117,21 +101,13 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     except JWTError:
         raise credentials_exception
 
-def get_user_db():
-    r = RedisClient.get_instance()
-    data = r.get("users_db")
-    if not data:
-        users = {
-            "admin": {"username": "admin", "password": hash_password("admin123"), "role": "admin"},
-            "user": {"username": "user", "password": hash_password("user123"), "role": "user"}
-        }
-        r.set("users_db", json.dumps(users))
-        return users
-    return json.loads(data)
+# --- Lifespan/Shutdown ---
 
-def save_user_db(users):
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("Backend shutting down cleanly", extra={"service_name": "backend", "event": "shutdown"})
     r = RedisClient.get_instance()
-    r.set("users_db", json.dumps(users))
+    r.close()
 
 # --- Health Check ---
 
@@ -140,165 +116,139 @@ async def health_check():
     r = RedisClient.get_instance()
     try:
         r.ping()
-        redis_status = "connected"
-        status_code = 200
+        return JSONResponse(
+            status_code=200,
+            content={"status": "ok", "redis": "connected", "timestamp": datetime.now().isoformat()}
+        )
     except Exception:
-        redis_status = "unreachable"
-        status_code = 503
-    
-    return StandardResponse(
-        status="ok" if status_code == 200 else "error",
-        data={"redis": redis_status, "timestamp": datetime.now().isoformat()},
-        message=None
-    )
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "redis": "unreachable", "timestamp": datetime.now().isoformat()}
+        )
 
 # --- Auth Routes ---
 
-@app.post("/auth/login")
+@app.post("/auth/login", response_model=StandardResponse)
 @limiter.limit("5/minute")
 def auth_login(req: LoginRequest, request: Request):
-    users = get_user_db()
-    user = users.get(req.username)
-    if not user or user["password"] != hash_password(req.password):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    
-    access_token = create_access_token({"sub": user["username"], "role": user["role"]})
-    refresh_token = create_refresh_token(user["username"])
-    return {
-        "status": "success",
-        "data": {
-            "token": access_token,
-            "refresh_token": refresh_token,
-            "role": user["role"]
-        },
-        "message": "Login successful",
-        "job_id": None
-    }
+    data = auth_controller.login_user(req.username, req.password)
+    return StandardResponse(
+        status="success",
+        data=data,
+        message="Login successful",
+        job_id=None
+    )
 
-@app.post("/auth/register")
+@app.post("/auth/register", response_model=StandardResponse)
 def register(req: RegisterRequest):
-    users = get_user_db()
-    if req.username in users:
-        raise HTTPException(status_code=400, detail="Username already exists")
-    
-    users[req.username] = {
-        "username": req.username,
-        "password": hash_password(req.password),
-        "role": "user"
-    }
-    save_user_db(users)
-    access_token = create_access_token({"sub": req.username, "role": "user"})
-    return {"success": True, "token": access_token, "role": "user"}
+    data = auth_controller.register_user(req.username, req.password)
+    return StandardResponse(
+        status="success",
+        data=data,
+        message="Registration successful",
+        job_id=None
+    )
 
-@app.post("/auth/refresh")
+@app.post("/auth/refresh", response_model=StandardResponse)
 def refresh_token(username: str):
-    r = RedisClient.get_instance()
-    stored_refresh = r.get(f"refresh:{username}")
-    if not stored_refresh:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
-    
-    users = get_user_db()
-    user = users.get(username)
-    access_token = create_access_token({"sub": user["username"], "role": user["role"]})
-    return {"success": True, "token": access_token}
+    data = auth_controller.refresh_user_token(username)
+    return StandardResponse(
+        status="success",
+        data=data,
+        message="Token refreshed",
+        job_id=None
+    )
 
 # --- Workflow Routes ---
 
 @app.post("/run-workflow", response_model=StandardResponse)
 @limiter.limit("10/minute")
 def run_workflow(req: WorkflowRequest, request: Request, current_user: dict = Depends(get_current_user)):
-    username = current_user["sub"]
-    trace_id = queue_workflow(req.command, username)
-    
-    r = RedisClient.get_instance()
-    notif = {
-        "id": str(uuid.uuid4()),
-        "message": f"Workflow queued: {req.command[:40]}",
-        "timestamp": datetime.now().isoformat(),
-        "status": "queued",
-        "username": username
-    }
-    r.lpush("notifications", json.dumps(notif))
-    r.ltrim("notifications", 0, 49)
-    
-    return StandardResponse(status="success", job_id=trace_id, message="Workflow queued")
+    job_id = workflow_controller.queue_workflow(req.command, current_user["sub"])
+    return StandardResponse(status="success", job_id=job_id, message="Workflow queued")
 
 @app.get("/result/{trace_id}", response_model=StandardResponse)
 def result(trace_id: str):
-    data = get_result(trace_id)
+    data = workflow_controller.get_result(trace_id)
     if not data:
         raise HTTPException(status_code=404, detail="Not found")
+    
+    if data.get("status") == "completed":
+        JOB_SUCCESS_TOTAL.inc()
+        if data.get("intent"):
+            TOOL_USAGE_TOTAL.labels(tool_name=data["intent"]).inc()
+    elif data.get("status") in ["failed", "DEAD"]:
+        JOB_FAILURE_TOTAL.inc()
+        
     return StandardResponse(status="success", data=data)
 
-@app.get("/logs")
+@app.get("/logs", response_model=StandardResponse)
 def logs(current_user: dict = Depends(get_current_user), page: int = 1, page_size: int = 20):
-    all_logs = get_all_logs()
+    all_logs = workflow_controller.get_all_logs()
     user_logs = [log for log in all_logs if log.get("username") == current_user["sub"]] if current_user["role"] != "admin" else all_logs
     
     start = (page - 1) * page_size
     end = start + page_size
-    return {
-        "data": user_logs[start:end],
-        "total": len(user_logs),
-        "page": page,
-        "page_size": page_size
-    }
+    return StandardResponse(
+        status="success",
+        data=user_logs[start:end],
+        message="ok",
+        job_id=None
+    )
+
+@app.get("/notifications")
+def get_notifications(current_user: dict = Depends(get_current_user)):
+    data = workflow_controller.get_notifications(current_user["sub"])
+    return data
 
 @app.post("/upload", response_model=StandardResponse)
 async def upload_file(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
     contents = await file.read()
     text = contents.decode("utf-8", errors="ignore")
-    
-    r = RedisClient.get_instance()
-    file_id = str(uuid.uuid4())
-    r.set(f"file:{file_id}", text[:5000])
-    
-    return StandardResponse(
-        status="success",
-        data={"file_id": file_id, "filename": file.filename},
-        message="File uploaded"
-    )
+    data = workflow_controller.handle_file_upload(text, file.filename)
+    return StandardResponse(status="success", data=data, message="File uploaded")
 
-@app.get("/admin/jobs")
+# --- Admin Routes ---
+
+@app.get("/admin/jobs", response_model=StandardResponse)
 def admin_jobs(current_user: dict = Depends(get_current_user), page: int = 1, page_size: int = 20):
     if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
     
-    r = RedisClient.get_instance()
-    keys = r.keys("trace:*")
-    jobs = []
-    for k in keys:
-        data = r.get(k)
-        if data:
-            job = json.loads(data)
-            jobs.append({
-                "trace_id": job.get("trace_id"),
-                "status": job.get("status"),
-                "worker_id": job.get("worker_id"),
-                "duration_ms": job.get("duration_ms"),
-                "intent": job.get("intent"),
-                "username": job.get("username"),
-                "completed_at": job.get("completed_at")
-            })
+    jobs = workflow_controller.get_admin_jobs()
+    start = (page - 1) * page_size
+    end = start + page_size
+    return StandardResponse(
+        status="success",
+        data=jobs[start:end],
+        message="ok",
+        job_id=None
+    )
+
+@app.get("/admin/workers", response_model=StandardResponse)
+def admin_workers(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
     
-@app.get("/admin/dead-letters")
+    workers = workflow_controller.get_admin_workers()
+    return StandardResponse(
+        status="success",
+        data=workers,
+        message="ok",
+        job_id=None
+    )
+
+@app.get("/admin/dead-letters", response_model=StandardResponse)
 def admin_dead_letters(current_user: dict = Depends(get_current_user), page: int = 1, page_size: int = 20):
     if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
     
-    r = RedisClient.get_instance()
-    dlq_items = r.lrange("dead_letter_queue", 0, -1)
-    
-    data = [json.loads(item) for item in dlq_items]
+    dlq = workflow_controller.get_admin_dead_letters()
     start = (page - 1) * page_size
     end = start + page_size
-    
-    return {
-        "status": "success",
-        "data": data[start:end],
-        "total": len(data),
-        "page": page,
-        "page_size": page_size,
-        "message": "ok",
-        "job_id": None
-    }
+    return StandardResponse(
+        status="success",
+        data=dlq[start:end],
+        message="ok",
+        job_id=None
+    )

@@ -1,12 +1,10 @@
 apiVersion: 1
 providers:
-  - name: 'Default'
+  - name: 'AI Workflow Agent'
     orgId: 1
     folder: ''
     type: file
     disableDeletion: false
-    editable: true
     updateIntervalSeconds: 10
-    allowUiUpdates: true
     options:
       path: /etc/grafana/provisioning/dashboards

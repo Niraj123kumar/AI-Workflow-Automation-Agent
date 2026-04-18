@@ -13,7 +13,7 @@ import ReactMarkdown from 'react-markdown';
 import { useDropzone } from 'react-dropzone';
 import { 
   Send, Paperclip, LogOut, History, Bell, Plus, 
-  Calendar, BarChart3, Shield, AlertTriangle
+  Calendar, BarChart3, Shield, AlertTriangle, CheckCircle2
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -114,11 +114,14 @@ const MessageCard = memo(({ message }: { message: Message }) => {
     }
 
     if (message.intent === 'summarize') {
+      const markdownContent = useMemo(() => (
+        <ReactMarkdown className="text-sm text-white/80 leading-relaxed prose prose-invert">
+          {res.summary}
+        </ReactMarkdown>
+      ), [res.summary]);
       return (
         <div className="mt-4 space-y-2">
-          <ReactMarkdown className="text-sm text-white/80 leading-relaxed prose prose-invert">
-            {res.summary}
-          </ReactMarkdown>
+          {markdownContent}
         </div>
       );
     }
@@ -250,16 +253,24 @@ export default function App() {
       try {
         const res = await getApi(`poll-${jobId}`).get(`/result/${jobId}`);
         const data = res.data.data;
+
+        // Update message map on every poll to reflect latest status/content
+        setMessagesMap(prev => {
+          const next = new Map(prev);
+          const msg = next.get(jobId);
+          if (msg) next.set(jobId, { ...msg, ...data });
+          return next;
+        });
+
         if (data.status === 'completed' || data.status === 'failed' || data.status === 'DEAD') {
           clearInterval(intervalId);
           pollIntervals.current.delete(jobId);
-          setMessagesMap(prev => {
-            const next = new Map(prev);
-            const msg = next.get(jobId);
-            if (msg) next.set(jobId, { ...msg, ...data });
-            return next;
-          });
           if (data.status === 'completed') setToast(`Job ${jobId.slice(0,8)} completed!`);
+          
+          // Reset list heights as the result might change the item size
+          setTimeout(() => {
+            chatListRef.current?.resetAfterIndex(0);
+          }, 0);
         }
       } catch (err) {
         if (!axios.isCancel(err)) {
@@ -399,12 +410,21 @@ export default function App() {
           <div className="flex-1 overflow-hidden">
             {loading ? (
               <div className="p-4 space-y-3">
-                {[1,2,3,4,5].map(i => <div key={i} className="h-10 bg-white/5 rounded-lg animate-pulse" />)}
+                {[1,2,3,4,5,6,7,8].map(i => <div key={i} className="h-10 bg-white/5 rounded-lg animate-pulse" />)}
               </div>
-            ) : (
+            ) : history.length > 20 ? (
               <List height={window.innerHeight - 180} itemCount={history.length} itemSize={56} width={260}>
                 {HistoryRow}
               </List>
+            ) : (
+              <div className="overflow-y-auto h-full">
+                {history.map((item, idx) => (
+                  <div key={idx} style={{height: 56}} className="px-4 py-3 hover:bg-white/5 cursor-pointer truncate text-sm text-white/60 flex items-center gap-3 group" onClick={() => setInput(item.command)}>
+                    <History className="w-3.5 h-3.5 opacity-30 group-hover:opacity-100" />
+                    {item.command}
+                  </div>
+                ))}
+              </div>
             )}
           </div>
           <div className="p-4 border-t border-white/5 bg-white/5">
@@ -437,7 +457,7 @@ export default function App() {
                 <h3 className="text-2xl font-bold">Secure AI Environment</h3>
                 <p className="max-w-xs text-center mt-2 text-sm">Drop files or type commands to begin automated workflows.</p>
               </div>
-            ) : (
+            ) : messages.length > 20 ? (
                <VariableSizeList
                 ref={chatListRef}
                 height={window.innerHeight - 180}
@@ -447,6 +467,13 @@ export default function App() {
               >
                 {MessageRow}
               </VariableSizeList>
+            ) : (
+              <div className="overflow-y-auto h-full pb-10">
+                {messages.map((m) => (
+                  <MessageCard key={m.id} message={m} />
+                ))}
+                {loading && <SkeletonCard />}
+              </div>
             )}
           </div>
 

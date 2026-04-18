@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import axios from 'axios';
 import { X, Activity, HardDrive, Cpu, Clock } from 'lucide-react';
 
 export default function AdminPanel({ onClose, getApi }: { onClose: () => void, getApi: (id: string) => any }) {
@@ -6,17 +7,19 @@ export default function AdminPanel({ onClose, getApi }: { onClose: () => void, g
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const controller = new AbortController();
     const fetchJobs = async () => {
       try {
-        const res = await getApi('admin-jobs').get('/admin/jobs');
-        setJobs(res.data);
+        const res = await getApi('admin-jobs').get('/admin/jobs', { signal: controller.signal });
+        setJobs(Array.isArray(res.data.data) ? res.data.data : []);
       } catch (err) {
-        console.error('Failed to fetch admin jobs', err);
+        if (!axios.isCancel(err)) console.error('Failed to fetch admin jobs', err);
       } finally {
         setLoading(false);
       }
     };
     fetchJobs();
+    return () => controller.abort();
   }, [getApi]);
 
   return (

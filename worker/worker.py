@@ -38,16 +38,19 @@ def handle_exit(sig, frame):
     running = False
     try:
         r.close()
-    except:
+    except Exception:
         pass
     sys.exit(0)
+
+signal.signal(signal.SIGTERM, handle_exit)
+signal.signal(signal.SIGINT, handle_exit)
 
 def decrypt_data(token):
     if not fernet or not token:
         return token
     try:
         return fernet.decrypt(token.encode()).decode()
-    except:
+    except Exception:
         return token
 
 def encrypt_data(data):
@@ -183,7 +186,6 @@ tools_config = [
 def process_task(task):
     trace_id = task.get("trace_id")
     command = task.get("command")
-    username = task.get("username")
     retry_count = task.get("retry_count", 0)
     start_time = time.time()
 
@@ -204,7 +206,8 @@ def process_task(task):
             file_id = None
             if "[file_id:" in command:
                 match = re.search(r"\[file_id:([^\]]+)\]", command)
-                if match: file_id = match.group(1)
+                if match:
+                    file_id = match.group(1)
 
             update_heartbeat()
             response = client.chat.completions.create(
@@ -226,7 +229,8 @@ def process_task(task):
                     result, intent = handle_meeting_scheduler(args.get("raw_command", command), trace_id), "scheduler"
                 elif function_name == "report_summarizer":
                     result, intent = handle_report_summarizer(args.get("text", command), args.get("file_id") or file_id, trace_id), "summarize"
-                else: result, intent = "Tool not found", "unknown"
+                else:
+                    result, intent = "Tool not found", "unknown"
             else:
                 result, intent = handle_report_summarizer(command, file_id, trace_id), "summarize"
 
@@ -274,4 +278,5 @@ while running:
             process_task(task)
         update_heartbeat()
     except Exception as e:
-        if running: logger.error(f"Worker loop error: {e}")
+        if running:
+            logger.error(f"Worker loop error: {e}")

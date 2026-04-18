@@ -1,27 +1,76 @@
 {
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "target": {
+          "limit": 100,
+          "matchAny": false,
+          "tags": [],
+          "type": "dashboard"
+        },
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "liveNow": false,
   "panels": [
     {
-      "title": "HTTP Requests Total",
-      "type": "graph",
-      "targets": [{ "expr": "http_requests_total" }]
+      "title": "Panel 1: Total HTTP requests over time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "sum(rate(http_requests_total[5m])) by (handler)", "refId": "A" }]
     },
     {
-      "title": "P95 Request Latency",
-      "type": "graph",
-      "targets": [{ "expr": "http_request_duration_seconds{quantile=\"0.95\"}" }]
+      "title": "Panel 2: Request latency p95",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))", "refId": "A" }]
     },
     {
-      "title": "Task Queue Depth",
+      "title": "Panel 3: Task queue depth",
       "type": "gauge",
-      "targets": [{ "expr": "redis_task_queue_depth" }]
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "targets": [{ "expr": "task_queue_depth", "refId": "A" }]
     },
     {
-      "title": "Job Status",
+      "title": "Panel 4: Jobs succeeded vs failed",
       "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
       "targets": [
-        { "expr": "job_success_total", "legendFormat": "Success" },
-        { "expr": "job_failure_total", "legendFormat": "Failure" }
+        { "expr": "job_success_total", "legendFormat": "Success", "refId": "A" },
+        { "expr": "job_failure_total", "legendFormat": "Failure", "refId": "B" }
       ]
+    },
+    {
+      "title": "Panel 5: Worker tool usage",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "targets": [{ "expr": "sum(tool_usage_total) by (tool_name)", "refId": "A" }]
     }
-  ]
+  ],
+  "refresh": "10s",
+  "schemaVersion": 36,
+  "style": "dark",
+  "tags": [],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "AI Workflow Agent Dashboard",
+  "version": 1
 }
