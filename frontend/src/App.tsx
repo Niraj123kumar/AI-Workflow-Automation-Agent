@@ -13,7 +13,8 @@ import ReactMarkdown from 'react-markdown';
 import { useDropzone } from 'react-dropzone';
 import { 
   Send, Paperclip, LogOut, History, Bell, Plus, 
-  Calendar, BarChart3, Shield, AlertTriangle, CheckCircle2
+  Calendar, BarChart3, Shield, AlertTriangle, CheckCircle2,
+  Activity, Zap, Clock, ChevronDown, ChevronUp
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -25,7 +26,7 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL;
+const API_BASE = (import.meta as any).env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 type Message = {
   id: string;
@@ -52,7 +53,7 @@ const ErrorFallback = ({ error }: FallbackProps) => (
       <p className="text-white/60 mb-4">Refresh the page to continue.</p>
       <details className="text-xs text-red-400 bg-black/30 p-4 rounded-xl text-left overflow-auto max-h-40">
         <summary className="cursor-pointer font-bold mb-1">Error details</summary>
-        {error?.message || 'Unknown error'}
+        {(error as any)?.message || 'Unknown error'}
       </details>
     </div>
   </div>
@@ -68,12 +69,45 @@ const SkeletonCard = () => (
 
 const MessageCard = memo(({ message }: { message: Message }) => {
   const isUser = message.role === 'user';
-  
+  const [showTrace, setShowTrace] = useState(false);
+  const [displayed, setDisplayed] = useState("");
+  const typeRef = useRef<any>(null);
+
+  const resultText = useMemo(() => {
+    if (!message.result) return "";
+    if (typeof message.result === 'string') return message.result;
+    if (message.intent === 'summarize' && message.result.summary) return message.result.summary;
+    return JSON.stringify(message.result);
+  }, [message.result, message.intent]);
+
+  useEffect(() => {
+    if (isUser || message.status !== 'completed' || !resultText) {
+      setDisplayed(resultText);
+      return;
+    }
+    
+    let i = 0;
+    if (typeRef.current) clearInterval(typeRef.current);
+    
+    typeRef.current = setInterval(() => {
+      setDisplayed(resultText.slice(0, i + 1));
+      i++;
+      if (i >= resultText.length) {
+        if (typeRef.current) clearInterval(typeRef.current);
+        typeRef.current = null;
+      }
+    }, 8);
+    
+    return () => {
+      if (typeRef.current) clearInterval(typeRef.current);
+    };
+  }, [message.status, resultText, isUser]);
+
   const resultView = useMemo(() => {
     if (!message.result) return null;
     let res = message.result;
     if (typeof res === 'string') {
-      try { res = JSON.parse(res); } catch { return <div className="mt-2 text-sm text-white/80">{res}</div>; }
+      try { res = JSON.parse(res); } catch { return <div className="mt-2 text-sm text-white/80 leading-relaxed">{displayed}{typeRef.current && "|"}</div>; }
     }
 
     if (message.intent === 'csv_analysis' && res.trends) {
@@ -114,20 +148,17 @@ const MessageCard = memo(({ message }: { message: Message }) => {
     }
 
     if (message.intent === 'summarize') {
-      const markdownContent = useMemo(() => (
-        <ReactMarkdown className="text-sm text-white/80 leading-relaxed prose prose-invert">
-          {res.summary}
-        </ReactMarkdown>
-      ), [res.summary]);
       return (
         <div className="mt-4 space-y-2">
-          {markdownContent}
+          <ReactMarkdown className="text-sm text-white/80 leading-relaxed prose prose-invert">
+            {displayed + (typeRef.current ? "|" : "")}
+          </ReactMarkdown>
         </div>
       );
     }
 
-    return <div className="mt-2 text-sm text-white/80">{JSON.stringify(res)}</div>;
-  }, [message.result, message.intent]);
+    return <div className="mt-2 text-sm text-white/80 leading-relaxed">{displayed}{typeRef.current && "|"}</div>;
+  }, [message.result, message.intent, displayed]);
 
   const intentColor = useMemo(() => {
     switch (message.intent) {
@@ -137,6 +168,19 @@ const MessageCard = memo(({ message }: { message: Message }) => {
       default: return 'bg-white/10 text-white/60';
     }
   }, [message.intent]);
+
+  const TraceStep = ({ label, value, active }: { label: string, value?: string, active?: boolean }) => (
+    <div className="flex flex-col items-center">
+      <div className="flex items-center gap-3 w-full">
+        <div className={cn("w-3 h-3 rounded-full shrink-0", active ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" : "bg-gray-600")} />
+        <div className="flex-1 flex items-baseline justify-between min-w-0">
+          <span className="text-xs text-gray-300 truncate">{label}</span>
+          <span className="text-[10px] text-gray-500 ml-2 font-mono whitespace-nowrap">{value || "—"}</span>
+        </div>
+      </div>
+      <div className="w-0.5 h-4 bg-gray-600/50 my-1 ml-[-204px]" style={{ marginLeft: "-221px" }} />
+    </div>
+  );
 
   return (
     <div className={cn("flex w-full mb-6 px-6", isUser ? "justify-end" : "justify-start")}>
@@ -149,7 +193,7 @@ const MessageCard = memo(({ message }: { message: Message }) => {
             {message.intent}
           </span>
         )}
-        <div className="text-sm whitespace-pre-wrap">{message.content}</div>
+        <div className="text-sm whitespace-pre-wrap leading-relaxed">{message.content}</div>
         {resultView}
         {message.status === 'pending' && (
           <div className="flex gap-1 mt-3">
@@ -159,7 +203,60 @@ const MessageCard = memo(({ message }: { message: Message }) => {
           </div>
         )}
         {!isUser && message.job_id && (
-          <div className="mt-2 text-[10px] text-white/20 font-mono">ID: {message.job_id.slice(0, 8)}</div>
+          <div className="mt-3 flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] text-white/20 font-mono">ID: {message.job_id.slice(0, 8)}</div>
+              {message.status === 'completed' && (
+                <button 
+                  onClick={() => setShowTrace(!showTrace)}
+                  className="text-[10px] text-gray-400 hover:text-gray-200 underline cursor-pointer transition-colors"
+                >
+                  {showTrace ? "Hide trace" : "Show trace"}
+                </button>
+              )}
+            </div>
+            
+            {showTrace && message.status === 'completed' && (
+              <div className="mt-2 p-3 rounded-xl bg-black/30 border border-white/5 animate-in fade-in slide-in-from-top-2 duration-300">
+                <div className="space-y-0 flex flex-col items-start">
+                  <TraceStep 
+                    label="Request received" 
+                    value={message.result?.timestamp ? new Date(message.result.timestamp).toLocaleTimeString() : undefined} 
+                    active={!!message.result?.timestamp} 
+                  />
+                  <TraceStep 
+                    label="Task pushed to Redis queue" 
+                    value={message.result?.timestamp ? new Date(message.result.timestamp).toLocaleTimeString() : undefined} 
+                    active={!!message.result?.timestamp} 
+                  />
+                  <TraceStep 
+                    label="Worker picked up task" 
+                    value={message.result?.worker_id ? `${message.result.worker_id}` : undefined} 
+                    active={!!message.result?.worker_id} 
+                  />
+                  <TraceStep 
+                    label="Intent detected" 
+                    value={message.result?.intent?.toUpperCase()} 
+                    active={!!message.result?.intent} 
+                  />
+                  <TraceStep 
+                    label="Tool executed" 
+                    value={message.result?.duration_ms ? `${message.result.duration_ms}ms` : undefined} 
+                    active={!!message.result?.duration_ms} 
+                  />
+                  <div className="flex items-center gap-3 w-full">
+                    <div className={cn("w-3 h-3 rounded-full shrink-0", message.result?.completed_at ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" : "bg-gray-600")} />
+                    <div className="flex-1 flex items-baseline justify-between min-w-0">
+                      <span className="text-xs text-gray-300">Result delivered</span>
+                      <span className="text-[10px] text-gray-500 ml-2 font-mono whitespace-nowrap">
+                        {message.result?.completed_at ? new Date(message.result.completed_at).toLocaleTimeString() : "—"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -172,20 +269,28 @@ const AdminPanel = lazy(() => import('./AdminPanel'));
 
 export default function App() {
   const [user, setUser] = useState<UserData | null>(null);
-  const [page, setPage] = useState<'login' | 'chat' | 'admin'>('login');
+  const [page, setPage] = useState<'login' | 'chat' | 'admin' | 'live'>('login');
   const [messagesMap, setMessagesMap] = useState<Map<string, Message>>(new Map());
   const [input, setInput] = useState('');
+  const [recipientEmail, setRecipientEmail] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [history, setHistory] = useState<any[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [mockMode, setMockMode] = useState(false);
+
+  // Live Dashboard State
+  const [healthData, setHealthData] = useState<any>(null);
+  const [workerData, setWorkerData] = useState<any[]>([]);
+  const [totalJobs, setTotalJobs] = useState(0);
 
   const tokenRef = useRef<string | null>(sessionStorage.getItem('jwt'));
   const pollIntervals = useRef<Map<string, number>>(new Map());
   const abortControllers = useRef<Map<string, AbortController>>(new Map());
   const chatListRef = useRef<any>(null);
+  const dashboardIntervals = useRef<number[]>([]);
 
   // --- Helpers ---
   const getApi = useCallback((requestId: string) => {
@@ -206,6 +311,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const res = await axios.get(`${API_BASE}/health`);
+        setMockMode(res.data.mock_mode);
+      } catch {}
+    };
+    checkHealth();
+
     if (tokenRef.current && !user) {
       // Re-hydrate user from token if needed (simplification: assume role 'user' or decode JWT)
       setUser({ username: 'session-user', role: 'admin' }); // Example role
@@ -214,8 +327,47 @@ export default function App() {
     return () => {
       abortControllers.current.forEach(c => c.abort());
       pollIntervals.current.forEach(i => clearInterval(i));
+      dashboardIntervals.current.forEach(i => clearInterval(i));
     };
   }, []);
+
+  // Live Dashboard Polling
+  useEffect(() => {
+    if (page === 'live' && user?.role === 'admin') {
+      const fetchInitial = async () => {
+        try {
+          const res = await getApi('live-total').get('/logs?page=1&page_size=1');
+          setTotalJobs(res.data.total || 0);
+        } catch {}
+      };
+      fetchInitial();
+
+      const pollHealth = async () => {
+        try {
+          const res = await getApi('live-health').get('/health');
+          setHealthData(res.data);
+        } catch {}
+      };
+      const pollWorkers = async () => {
+        try {
+          const res = await getApi('live-workers').get('/admin/workers');
+          setWorkerData(res.data.data || []);
+        } catch {}
+      };
+
+      pollHealth();
+      pollWorkers();
+
+      const hInterval = window.setInterval(pollHealth, 5000);
+      const wInterval = window.setInterval(pollWorkers, 5000);
+      dashboardIntervals.current = [hInterval, wInterval];
+
+      return () => {
+        dashboardIntervals.current.forEach(i => clearInterval(i));
+        dashboardIntervals.current = [];
+      };
+    }
+  }, [page, user, getApi]);
 
   useEffect(() => {
     if (toast) {
@@ -293,7 +445,8 @@ export default function App() {
     try {
       const res = await getApi('send').post('/run-workflow', { 
         command: input, 
-        username: user?.username 
+        username: user?.username,
+        recipient_email: recipientEmail || null
       });
       const jobId = res.data.job_id;
       setMessagesMap(prev => {
@@ -302,6 +455,7 @@ export default function App() {
         return next;
       });
       setInput('');
+      setRecipientEmail('');
       pollResult(jobId);
     } catch (err) {
       if (!axios.isCancel(err)) alert('Failed to send');
@@ -398,8 +552,14 @@ export default function App() {
 
   return (
     <ErrorBoundary FallbackComponent={ErrorFallback}>
-      <div className="flex h-screen bg-[#0f0f1a] text-white overflow-hidden font-sans">
-        <aside className="w-[260px] glass border-r border-white/5 flex flex-col hidden md:flex shrink-0">
+      <div className="flex h-screen bg-[#0f0f1a] text-white overflow-hidden font-sans flex-col">
+        {mockMode && (
+          <div className="bg-yellow-400 text-yellow-900 text-center text-sm py-2 font-medium shrink-0">
+            Running in demo mode — OpenAI key not set. Responses are simulated.
+          </div>
+        )}
+        <div className="flex flex-1 overflow-hidden">
+          <aside className="w-[260px] glass border-r border-white/5 flex flex-col hidden md:flex shrink-0">
           <div className="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
             <div className="flex items-center gap-2">
               <Shield className="w-5 h-5 text-blue-500" />
@@ -427,13 +587,30 @@ export default function App() {
               </div>
             )}
           </div>
-          <div className="p-4 border-t border-white/5 bg-white/5">
+          <div className="p-4 border-t border-white/5 bg-white/5 space-y-2">
              {user?.role === 'admin' && (
-                <button onClick={() => setPage('admin')} className="w-full flex items-center gap-3 p-3 glass hover:bg-white/10 rounded-xl transition-all text-sm font-bold text-blue-400 mb-2">
-                  <BarChart3 className="w-4 h-4" /> Admin Console
-                </button>
+                <>
+                  <button 
+                    onClick={() => setPage('live')} 
+                    className={cn(
+                      "w-full flex items-center gap-3 p-3 glass hover:bg-white/10 rounded-xl transition-all text-sm font-bold mb-2",
+                      page === 'live' ? "text-green-400 border-green-500/50 bg-green-500/5" : "text-gray-400"
+                    )}
+                  >
+                    <Activity className="w-4 h-4" /> Live Dashboard
+                  </button>
+                  <button 
+                    onClick={() => setPage('admin')} 
+                    className={cn(
+                      "w-full flex items-center gap-3 p-3 glass hover:bg-white/10 rounded-xl transition-all text-sm font-bold mb-2",
+                      page === 'admin' ? "text-blue-400 border-blue-500/50 bg-blue-500/5" : "text-gray-400"
+                    )}
+                  >
+                    <BarChart3 className="w-4 h-4" /> Admin Console
+                  </button>
+                </>
               )}
-              <div className="flex items-center justify-between px-2">
+              <div className="flex items-center justify-between px-2 pt-2 border-t border-white/5">
                 <span className="text-[10px] font-bold text-white/30 uppercase tracking-widest">{user?.username}</span>
                 <button onClick={() => { sessionStorage.clear(); window.location.reload(); }} className="text-white/20 hover:text-red-400 transition-colors"><LogOut className="w-4 h-4" /></button>
               </div>
@@ -442,8 +619,11 @@ export default function App() {
 
         <main className="flex-1 flex flex-col relative min-w-0">
           <header className="h-16 border-b border-white/5 flex items-center justify-between px-8 glass shrink-0">
-            <h2 className="font-bold text-lg">Chat Stream</h2>
+            <h2 className="font-bold text-lg">{page === 'live' ? 'Live System Status' : 'Chat Stream'}</h2>
             <div className="flex items-center gap-4">
+               {page === 'live' && (
+                 <button onClick={() => setPage('chat')} className="text-xs text-blue-400 hover:underline">Back to Chat</button>
+               )}
                <div className="flex -space-x-2">
                  <div className="w-8 h-8 rounded-full border-2 border-[#0f0f1a] bg-blue-600 flex items-center justify-center text-[10px] font-bold">A</div>
                </div>
@@ -451,7 +631,87 @@ export default function App() {
           </header>
 
           <div className="flex-1 overflow-hidden">
-            {messages.length === 0 ? (
+            {page === 'live' ? (
+              <div className="p-8 max-w-5xl mx-auto space-y-8 animate-in fade-in duration-500">
+                {/* System Status Banner */}
+                {(() => {
+                  const workersAlive = workerData.filter(w => w.alive).length;
+                  const queueDepth = healthData?.queue_depth || 0;
+                  
+                  if (workersAlive === 2 && queueDepth < 10) {
+                    return <div className="bg-green-500/10 border border-green-500/20 text-green-400 p-4 rounded-2xl text-center font-bold tracking-widest text-sm">ALL SYSTEMS GREEN</div>;
+                  } else if (workersAlive === 0) {
+                    return <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-2xl text-center font-bold tracking-widest text-sm">SYSTEM DOWN</div>;
+                  } else {
+                    return <div className="bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 p-4 rounded-2xl text-center font-bold tracking-widest text-sm">DEGRADED</div>;
+                  }
+                })()}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                  {/* Worker Cards */}
+                  {[0, 1].map(idx => {
+                    const worker = workerData[idx];
+                    return (
+                      <div key={idx} className="glass p-6 rounded-3xl border border-white/5 flex flex-col gap-4">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-white/40 uppercase">Worker {idx + 1}</span>
+                          <div className={cn("w-2 h-2 rounded-full", worker?.alive ? "bg-green-400 animate-pulse shadow-[0_0_8px_rgba(74,222,128,0.5)]" : "bg-red-400")} />
+                        </div>
+                        <div>
+                          <div className="text-xl font-bold">{worker?.alive ? "Active" : "Offline"}</div>
+                          <div className="text-[10px] text-white/20 font-mono mt-1 truncate">{worker?.worker_id || "N/A"}</div>
+                        </div>
+                        <div className="pt-4 border-t border-white/5">
+                          <div className="text-[9px] uppercase text-white/40 font-bold mb-1">Last Seen</div>
+                          <div className="text-xs text-white/60 font-mono">{worker?.last_seen_iso ? new Date(worker.last_seen_iso).toLocaleTimeString() : "—"}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Queue Depth Card */}
+                  <div className="glass p-6 rounded-3xl border border-white/5 flex flex-col gap-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-white/40 uppercase">Queue Depth</span>
+                      <Zap className="w-4 h-4 text-yellow-400" />
+                    </div>
+                    <div>
+                      <div className="text-3xl font-bold">{healthData?.queue_depth ?? 0}</div>
+                      <div className="text-xs text-white/40 mt-1">Tasks pending</div>
+                    </div>
+                  </div>
+
+                  {/* Total Jobs Card */}
+                  <div className="glass p-6 rounded-3xl border border-white/5 flex flex-col gap-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-white/40 uppercase">System Total</span>
+                      <Clock className="w-4 h-4 text-blue-400" />
+                    </div>
+                    <div>
+                      <div className="text-3xl font-bold">{totalJobs}</div>
+                      <div className="text-xs text-white/40 mt-1">Jobs completed</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="glass p-8 rounded-[40px] border border-white/5 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-8 opacity-5">
+                    <Activity className="w-32 h-32 text-blue-500" />
+                  </div>
+                  <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+                    <Activity className="w-5 h-5 text-blue-500" />
+                    Real-time Architecture Visualization
+                  </h3>
+                  <p className="text-sm text-white/60 max-w-2xl leading-relaxed">
+                    The AI Agent stack is built using a distributed producer-consumer architecture. 
+                    The React SPA acts as the producer, pushing tasks into a Redis queue. 
+                    Independent Python workers consume tasks via a blocking RPOP pattern, ensuring 
+                    idempotency and high throughput. Health metrics are collected in real-time 
+                    via Prometheus and Loki.
+                  </p>
+                </div>
+              </div>
+            ) : messages.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center opacity-20 select-none">
                 <Shield className="w-24 h-24 mb-6" />
                 <h3 className="text-2xl font-bold">Secure AI Environment</h3>
@@ -479,6 +739,41 @@ export default function App() {
 
           <div className="p-6 md:p-10 pt-0 shrink-0">
             <div className="max-w-4xl mx-auto glass rounded-3xl p-2 shadow-2xl relative border border-white/10 group focus-within:border-blue-500/50 transition-all">
+              <div className="flex items-center gap-2 px-4 pt-2 mb-2">
+                <button 
+                  onClick={() => setInput("Analyze this CSV and provide the top 5 trends with insights")}
+                  className="bg-gray-800 text-gray-300 text-xs px-3 py-1 rounded-full border border-gray-600 hover:bg-gray-700 cursor-pointer transition-colors"
+                >
+                  Analyze CSV
+                </button>
+                <button 
+                  onClick={() => setInput("Schedule a team standup meeting tomorrow at 10am with the engineering team")}
+                  className="bg-gray-800 text-gray-300 text-xs px-3 py-1 rounded-full border border-gray-600 hover:bg-gray-700 cursor-pointer transition-colors"
+                >
+                  Schedule Meeting
+                </button>
+                <button 
+                  onClick={() => {
+                    setInput("Summarize today's AI industry developments and send the report");
+                    setRecipientEmail("demo@example.com");
+                  }}
+                  className="bg-gray-800 text-gray-300 text-xs px-3 py-1 rounded-full border border-gray-600 hover:bg-gray-700 cursor-pointer transition-colors"
+                >
+                  Summarize & Send
+                </button>
+              </div>
+
+              {(input.toLowerCase().includes('send') || input.toLowerCase().includes('report')) && (
+                <div className="px-4 pt-2">
+                  <input 
+                    type="email" 
+                    placeholder="Send result to email (optional)" 
+                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm text-white focus:outline-none focus:border-blue-500/50"
+                    value={recipientEmail}
+                    onChange={e => setRecipientEmail(e.target.value)}
+                  />
+                </div>
+              )}
               <textarea 
                 className="w-full bg-transparent p-4 focus:outline-none resize-none text-white h-24 text-lg"
                 placeholder="Schedule a sync with the team tomorrow..."
@@ -519,6 +814,7 @@ export default function App() {
             <p className="text-sm font-medium">{toast}</p>
           </div>
         )}
+        </div>
       </div>
     </ErrorBoundary>
   );

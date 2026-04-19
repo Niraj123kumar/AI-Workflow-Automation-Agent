@@ -11,6 +11,7 @@ from openai import OpenAI
 import redis
 from cryptography.fernet import Fernet
 from pythonjsonlogger import jsonlogger
+from tools.send_report import tool_send_report
 
 # Structured Logging
 logger = logging.getLogger()
@@ -249,6 +250,20 @@ def process_task(task):
         r.set(f"trace:{trace_id}", json.dumps(task))
         r.publish(f"task_complete:{trace_id}", json.dumps(task))
         logger.info("Task completed", extra={"job_id": trace_id, "service_name": "worker", "event": "task_completed"})
+
+        # MISSING 2: Send report if recipient_email is provided
+        recipient_email = task.get("recipient_email")
+        if recipient_email and intent == "summarize":
+            try:
+                summary_text = result.get("summary") if isinstance(result, dict) else str(result)
+                email_res = tool_send_report(summary_text, recipient_email, trace_id)
+                log_tool_usage("send_report", 0, 0, 0, trace_id)
+                if email_res.get("sent"):
+                    logger.info(f"Report sent to {recipient_email}", extra={"job_id": trace_id, "event": "email_sent"})
+                else:
+                    logger.error(f"Failed to send report to {recipient_email}: {email_res.get('error')}", extra={"job_id": trace_id, "event": "email_failed"})
+            except Exception as e:
+                logger.error(f"Email tool error: {e}", extra={"job_id": trace_id})
 
     except Exception as e:
         print(f"ERROR: Task {trace_id} failed: {str(e)}", file=sys.stderr)

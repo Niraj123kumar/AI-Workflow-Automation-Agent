@@ -23,6 +23,7 @@ class OTPVerifyRequest(BaseModel):
 class WorkflowRequest(BaseModel):
     command: str
     username: str
+    recipient_email: Optional[str] = None
 
     @field_validator('command')
     @classmethod

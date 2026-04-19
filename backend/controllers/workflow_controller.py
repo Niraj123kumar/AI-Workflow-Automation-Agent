@@ -7,7 +7,7 @@ from services.redis_client import RedisClient
 
 logger = logging.getLogger(__name__)
 
-def queue_workflow(command: str, username: str):
+def queue_workflow(command: str, username: str, recipient_email: str = None):
     r = RedisClient.get_instance()
     trace_id = str(uuid.uuid4())
     task = {
@@ -16,7 +16,8 @@ def queue_workflow(command: str, username: str):
         "username": username,
         "timestamp": datetime.now().isoformat(),
         "status": "queued",
-        "retry_count": 0
+        "retry_count": 0,
+        "recipient_email": recipient_email
     }
     r.lpush("task_queue", json.dumps(task))
     r.set(f"trace:{trace_id}", json.dumps(task))

@@ -56,6 +56,13 @@
       "type": "stat",
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
       "targets": [{ "expr": "sum(tool_usage_total) by (tool_name)", "refId": "A" }]
+    },
+    {
+      "title": "Panel 6: Live log stream from Loki",
+      "type": "logs",
+      "datasource": "Loki",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 16 },
+      "targets": [{ "expr": "{job=~\"backend|worker\"}", "refId": "A" }]
     }
   ],
   "refresh": "10s",

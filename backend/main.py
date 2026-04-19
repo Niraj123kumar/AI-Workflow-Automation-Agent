@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from pythonjsonlogger import jsonlogger
-from prometheus_fastapi_instrumentator import Instrumentator, Metrics
+from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import Gauge, Counter
 from authlib.integrations.starlette_client import OAuth
 from starlette.middleware.sessions import SessionMiddleware
@@ -114,16 +114,30 @@ async def shutdown_event():
 @app.get("/health")
 async def health_check():
     r = RedisClient.get_instance()
+    mock_mode = not bool(os.getenv("OPENAI_API_KEY", "").strip())
+    queue_depth = r.llen("task_queue")
     try:
         r.ping()
         return JSONResponse(
             status_code=200,
-            content={"status": "ok", "redis": "connected", "timestamp": datetime.now().isoformat()}
+            content={
+                "status": "ok", 
+                "redis": "connected", 
+                "timestamp": datetime.now().isoformat(),
+                "mock_mode": mock_mode,
+                "queue_depth": queue_depth
+            }
         )
     except Exception:
         return JSONResponse(
             status_code=503,
-            content={"status": "error", "redis": "unreachable", "timestamp": datetime.now().isoformat()}
+            content={
+                "status": "error", 
+                "redis": "unreachable", 
+                "timestamp": datetime.now().isoformat(),
+                "mock_mode": mock_mode,
+                "queue_depth": queue_depth
+            }
         )
 
 # --- Auth Routes ---
@@ -164,7 +178,7 @@ def refresh_token(username: str):
 @app.post("/run-workflow", response_model=StandardResponse)
 @limiter.limit("10/minute")
 def run_workflow(req: WorkflowRequest, request: Request, current_user: dict = Depends(get_current_user)):
-    job_id = workflow_controller.queue_workflow(req.command, current_user["sub"])
+    job_id = workflow_controller.queue_workflow(req.command, current_user["sub"], req.recipient_email)
     return StandardResponse(status="success", job_id=job_id, message="Workflow queued")
 
 @app.get("/result/{trace_id}", response_model=StandardResponse)
